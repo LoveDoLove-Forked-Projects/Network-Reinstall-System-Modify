@@ -1,6 +1,6 @@
 #!/bin/sh
 # CXT-SystemPrep - Cleaning and Encapsulating the System
-# Tool version: 1.1.0 (2026-08-10)
+# Tool version: 2.0.0 (2026-08-10)
 # Prepare a Linux installation for offline capture as a reusable disk image.
 #
 # Run only on a source/template system intended for image preparation.
@@ -17,7 +17,7 @@ export PATH
 umask 077
 
 PROGRAM_NAME=CXT-SystemPrep
-PROGRAM_VERSION=1.1.0
+PROGRAM_VERSION=2.0.0
 PROGRAM_BUILD_DATE=2026-08-10
 # Build packaging may export this optional value. Repository source snapshots
 # intentionally leave it unspecified because a source file cannot embed the
@@ -137,7 +137,8 @@ Options:
   --machine-id             Mark /etc/machine-id uninitialized and remove the
                            legacy D-Bus copy; requires --poweroff or --reboot
   --cloud-state
-                           Clean cloud-init instance cache, logs, runtime, and seed
+                           Clean cloud-init instance cache, logs, runtime, and seed;
+                           the next boot reruns once-per-instance cloud-init modules
   --cloud-configs
                            HIGH RISK: also run cloud-init clean --configs all;
                            implies --cloud-state and requires --poweroff
@@ -187,6 +188,12 @@ Profiles never select reboot or poweroff:
   seal     test + machine identity + SSH host keys + SSH client known_hosts
   privacy  seal + mounted filesystem free-space zeroing + active swap wiping
   seal and privacy must be combined with --poweroff or --reboot.
+
+Cloud-init rearm warning:
+  --cloud-state makes the next boot rerun once-per-instance modules and datasource
+  user-data. Depending on cloud-init configuration, this may independently
+  regenerate SSH host keys, reapply passwords, hostname, SSH/network settings and
+  files, or execute user-data commands regardless of the direct CXT switches.
 
 Real execution requirements and lifecycle:
   A modern systemd host with systemd-run --collect and loginctl is required.
@@ -880,7 +887,7 @@ $plan_key
     done
     [ "$plan_writer_found" -eq 1 ] || printf '%s\n' '  none detected'
     printf '%s\n' \
-        '  Every safely mapped system service affecting cleanup is stopped.' \
+        '  Every safely mapped system service affecting cleanup will be stopped.' \
         '  User services require a final power action or must not hold cleanup-related files.' \
         '  Nonstandard application logs remain untouched unless selected by --paths.'
 }
@@ -1021,6 +1028,10 @@ print_plan() {
             printf '%s\n' '  cloud-init rearm precheck: BLOCKED (no enabled boot integration found)'
             PLAN_BLOCKED=1
         fi
+        printf '%s\n' \
+            '  cloud-init next-boot effects: WARNING (once-per-instance modules and datasource user-data will run again)' \
+            '    cloud-init may independently regenerate SSH host keys regardless of the direct CXT host-key switch' \
+            '    passwords, hostname, SSH/network settings, files, and user-data commands may be reapplied'
     fi
     if [ "$REMOVE_CLOUD_INIT_GENERATED_CONFIGS" -eq 1 ]; then
         if [ "$ACTION" = none ]; then
@@ -1185,6 +1196,9 @@ HOST_NAME=$(hostname 2>/dev/null || printf unknown)
 log "version: $(version_summary)"
 log "target host: $HOST_NAME; root filesystem: $ROOT_DEVICE; final action: $ACTION"
 warn "this permanently removes audit records, logs, command histories, crash data, and transient state"
+if [ "$REMOVE_CLOUD_INIT_STATE" -eq 1 ] && [ "$IN_RUNTIME_SERVICE" -eq 0 ]; then
+    warn "cloud-init rearm makes the next boot rerun once-per-instance modules and datasource user-data; it may independently regenerate SSH host keys, reapply passwords/configuration, and execute user-data commands"
+fi
 
 if [ "$ASSUME_YES" -ne 1 ]; then
     [ -t 0 ] || die "non-interactive input requires --yes"

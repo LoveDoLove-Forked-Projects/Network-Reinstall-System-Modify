@@ -6,7 +6,7 @@
 
 It removes disposable logs, histories, caches, package-manager history, container text logs, and transient state. Clone-specific identity operations are explicit and never selected by the default profile.
 
-Current tool version: **1.1.0**, built on **2026-08-10**. This tool keeps its
+Current tool version: **2.0.0**, built on **2026-08-10**. This tool keeps its
 own version record and does not require a repository-level Git tag or release.
 
 > **Warning**
@@ -89,6 +89,10 @@ A successful preview ends with:
 A blocked preview prints an explanatory `BLOCKED` item and ends with exit code
 `2`.
 
+When cloud-init state cleanup is selected, the preview also reports the possible
+next-boot effects of rearming once-per-instance modules. These are cloud-init
+effects, not direct CXT identity operations.
+
 ## Profiles
 
 | Profile | Scope |
@@ -122,7 +126,7 @@ exec /bin/sh /run/CXT-SystemPrep.sh --profile privacy --reboot --yes
 | `--poweroff` | Clean, sync, and power off |
 | `--reboot` | Clean, sync, and reboot |
 | `--machine-id` | Mark `/etc/machine-id` as uninitialized and remove the legacy D-Bus copy; requires a final power action |
-| `--cloud-state` | Remove cloud-init instance cache, logs, runtime state, and seed data |
+| `--cloud-state` | Remove cloud-init instance cache, logs, runtime state, and seed data; the next boot reruns once-per-instance modules and datasource User Data |
 | `--cloud-configs` | **High risk:** also run `cloud-init clean --configs all`; implies cloud-state cleanup and requires `--poweroff` or `--reboot` |
 | `--leases` | Remove saved DHCP and NetworkManager lease files; requires a final power action |
 | `--random-seed` | Remove systemd's saved random seed; requires a final power action |
@@ -138,9 +142,10 @@ exec /bin/sh /run/CXT-SystemPrep.sh --profile privacy --reboot --yes
 | `--help` | Show help |
 | `--version` | Show the version, build date, and optional commit supplied by release packaging or the build environment |
 
-Version 1.1.0 intentionally removes the v1.0.x compatibility names and short
-aliases. Profiles remain the recommended interface; the shorter switches above
-are for custom scopes.
+Version 2.0.0 uses the streamlined interface introduced in version 1.1.0 and
+intentionally does not accept the v1.0.x compatibility names or short aliases.
+Profiles remain the recommended interface; the switches above are for custom
+scopes.
 
 ## Automatic transient-service behavior
 
@@ -232,6 +237,22 @@ log. Extra business logs or caches must be explicitly supplied through
 
 `--cloud-state` clears cloud-init instance state, logs, runtime state, and seed data, while intentionally retaining cloud-init-generated system configuration.
 
+Rearming cloud-init is broader than deleting cached files. On the next boot,
+once-per-instance modules and datasource User Data run again. Depending on the
+installed cloud-init configuration and datasource, cloud-init may independently:
+
+- delete and regenerate SSH host keys even when direct CXT `--host-keys` removal
+  is disabled;
+- reapply account passwords, hostname, SSH daemon settings, network settings,
+  and files;
+- execute `runcmd`, scripts, package operations, or other User Data actions.
+
+The identity switches in the CXT plan report only direct actions performed by
+CXT-SystemPrep. For example, `remove SSH host keys: disabled` does not guarantee
+that cloud-init itself will preserve them after `--cloud-state`. Review the
+effective datasource and User Data before sealing, keep console access available
+for tests, and use `--dry-run` to display this warning before a real operation.
+
 `--cloud-configs` is a separate high-risk option. It requests `cloud-init clean --configs all`, which may remove generated network configuration, SSH daemon fragments, datasource-specific files, and cloud-init-managed `/etc/fstab` entries. Use it only when the next boot is guaranteed to receive compatible cloud-init data and can regenerate the configuration.
 
 Use dry-run before enabling this option:
@@ -244,7 +265,9 @@ Use dry-run before enabling this option:
   --dry-run
 ```
 
-## Extra list files
+## Extra path and service lists
+
+### Extra path list
 
 `--paths FILE` accepts one absolute path per line. Blank lines and `#`
 comments are ignored. A listed directory is emptied but preserved. The script
@@ -253,14 +276,35 @@ roots, database roots, and suspicious paths outside dedicated
 log/cache/history/trace/audit/tmp locations. This is the normal mechanism for
 cleaning application-owned paths such as `/home/picoclaw/.picoclaw/logs`.
 
+### Extra service list
+
 `--services FILE` accepts one system-manager `.service`, `.socket`,
 `.timer`, or `.path` unit per line. Arbitrary `.target` units, critical runtime
 dependencies, systemd user-manager units, and missing or unloaded units are
 rejected before staging. Listed units are stopped and runtime-masked during
-cleanup. They are restored only when no final power action is selected and they
-were active before the run. This option is an advanced override for activators
-or services that cannot be discovered from a currently open log file; it is not
-normally needed for a service that writes a standard or extra log path.
+cleanup, but are never deleted, disabled, or uninstalled. When no final power
+action is selected, units that were active before cleanup are restored. With
+`--reboot` or `--poweroff`, CXT does not change persistent enablement; enabled
+units start normally on the next boot. This option is an advanced override for
+activators or services that cannot be discovered from a currently open log
+file; it is not normally needed for a service that writes a standard or extra
+log path.
+
+Example service list:
+
+```sh
+printf '%s\n' \
+  nginx.service \
+  picoclaw.service \
+  > /run/cxt-extra-services.list
+
+/bin/sh /run/CXT-SystemPrep.sh \
+  --profile test \
+  --services /run/cxt-extra-services.list \
+  --dry-run
+```
+
+### List-file lifecycle
 
 Extra list files are copied into the private `/run` staging directory for
 execution, but their original source files are not deleted. Put the originals
