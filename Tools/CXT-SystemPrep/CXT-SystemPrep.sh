@@ -1,13 +1,13 @@
 #!/bin/sh
 # CXT-SystemPrep - Cleaning and Encapsulating the System
-# Sealed release: 2026-08-07
+# Tool version: 1.1.0 (2026-08-10)
 # Prepare a Linux installation for offline capture as a reusable disk image.
 #
 # Run only on a source/template system intended for image preparation.
 # Default: remove logs/history/caches/transient state without resetting clone
 # identity and without rebooting or powering off.
 # Application logs outside standard locations are cleaned only when an explicit
-# --extra-paths file is supplied. Related systemd system services are discovered
+# --paths file is supplied. Related systemd system services are discovered
 # from writable open file descriptors and are stopped without being disabled.
 
 set -eu
@@ -15,6 +15,14 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 umask 077
+
+PROGRAM_NAME=CXT-SystemPrep
+PROGRAM_VERSION=1.1.0
+PROGRAM_BUILD_DATE=2026-08-10
+# Build packaging may export this optional value. Repository source snapshots
+# intentionally leave it unspecified because a source file cannot embed the
+# commit that is created only after that file is committed.
+PROGRAM_BUILD_COMMIT=${CXT_SYSTEMPREP_BUILD_COMMIT:-}
 
 ACTION=none
 ACTION_SELECTED=0
@@ -126,36 +134,34 @@ Options:
   --profile PROFILE        Feature preset: test, seal, or privacy
   --poweroff               Clean, sync, and power off; default is no power action
   --reboot                 Clean, sync, and reboot; default is no power action
-  --remove-machine-identity
-                           Enable machine-id, cloud-init state, network lease,
-                           and random-seed removal
-  --remove-machine-id      Mark /etc/machine-id uninitialized and remove the
+  --machine-id             Mark /etc/machine-id uninitialized and remove the
                            legacy D-Bus copy; requires --poweroff or --reboot
-  --remove-cloud-init-state
+  --cloud-state
                            Clean cloud-init instance cache, logs, runtime, and seed
-  --remove-cloud-init-generated-configs
+  --cloud-configs
                            HIGH RISK: also run cloud-init clean --configs all;
-                           implies --remove-cloud-init-state and requires --poweroff
+                           implies --cloud-state and requires --poweroff
                            or --reboot. Not included in any profile. Use only when
                            the next boot has a compatible cloud-init datasource.
-  --remove-network-leases  Remove DHCP/network-manager lease files; requires a
+  --leases                 Remove DHCP/network-manager lease files; requires a
                            final power action so active networking cannot repopulate them
-  --remove-random-seed     Remove systemd's saved random seed; requires a final
+  --random-seed            Remove systemd's saved random seed; requires a final
                            power action so shutdown cannot save it again
-  --remove-ssh-host-keys   Remove SSH server host keys; requires --poweroff or
+  --host-keys              Remove SSH server host keys; requires --poweroff or
                            --reboot and verified boot-time regeneration
-  --remove-known-hosts     Remove user and system-wide SSH client known_hosts files
-  --zero-free-space        Fill free space on mounted ext2/3/4 and XFS filesystems
+  --known-hosts            Remove user and system-wide SSH client known_hosts files
+  --zero-free              Fill free space on mounted ext2/3/4 and XFS filesystems
                            with zeros (slow; improves raw DD image compression)
   --wipe-swap              Zero active disk swap and recreate its UUID/label; swap
                            remains off until next boot (slow; requires enough RAM)
-  --extra-paths FILE       Read extra application log/cache paths from FILE
-  --extra-services FILE    Stop additional system-manager units listed in FILE
+  --paths FILE             Read extra application log/cache paths from FILE
+  --services FILE          Stop additional system-manager units listed in FILE
   --dry-run                Print the resolved plan; make no changes
   --verify                 Write advisory verification to cxt-systemprep.log in
                            the private runtime directory
   --yes                    Skip the interactive confirmation
-  -h, --help               Show this help
+  --help                   Show this help
+  --version                Show version, build date, and optional build commit
 
 Extra-path file format:
   One absolute file or directory per line. Empty lines and lines beginning with #
@@ -172,7 +178,7 @@ Extra-service file format:
 Automatic writer handling:
   During real cleanup, every mapped system service writing a selected cleanup
   target or other log-like file is stopped and runtime-masked. Nonstandard
-  application logs are preserved unless selected by --extra-paths. In no-power
+  application logs are preserved unless selected by --paths. In no-power
   mode, a systemd user-service writer is blocked because exact restoration cannot
   be guaranteed. With reboot or poweroff, user resources terminate before sealing.
 
@@ -187,7 +193,7 @@ Real execution requirements and lifecycle:
   The script copies itself and extra list files into a private 0700 directory
   under tmpfs-backed /run, verifies the script copy by SHA-256, starts a
   transient service, terminates login sessions, and removes the source script.
-  Original --extra-paths/--extra-services list files are not deleted; place them under /run
+  Original --paths/--services list files are not deleted; place them under /run
   as well when their automatic removal at reboot is desired.
   On success, the runtime script and transient payload are also removed.
   --help and --dry-run never stage, start a service, terminate sessions, or
@@ -199,6 +205,24 @@ log() { printf '%s\n' "[CXT-SystemPrep] $*"; }
 warn() { printf '%s\n' "[CXT-SystemPrep] WARNING: $*" >&2; }
 die() { printf '%s\n' "[CXT-SystemPrep] ERROR: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+print_version() {
+    printf '%s %s\n' "$PROGRAM_NAME" "$PROGRAM_VERSION"
+    printf 'build date: %s\n' "$PROGRAM_BUILD_DATE"
+    if [ -n "$PROGRAM_BUILD_COMMIT" ]; then
+        printf 'build commit: %s\n' "$PROGRAM_BUILD_COMMIT"
+    else
+        printf '%s\n' 'build commit: not embedded'
+    fi
+}
+version_summary() {
+    if [ -n "$PROGRAM_BUILD_COMMIT" ]; then
+        printf '%s %s; build date: %s; commit: %s' \
+            "$PROGRAM_NAME" "$PROGRAM_VERSION" "$PROGRAM_BUILD_DATE" "$PROGRAM_BUILD_COMMIT"
+    else
+        printf '%s %s; build date: %s' \
+            "$PROGRAM_NAME" "$PROGRAM_VERSION" "$PROGRAM_BUILD_DATE"
+    fi
+}
 resolve_script_path() {
     case $0 in
         /*) resolved_script=$0 ;;
@@ -321,31 +345,25 @@ while [ "$#" -gt 0 ]; do
             ;;
         --poweroff) select_action poweroff ;;
         --reboot) select_action reboot ;;
-        --remove-machine-identity)
-            REMOVE_MACHINE_ID=1
-            REMOVE_CLOUD_INIT_STATE=1
-            REMOVE_NETWORK_LEASES=1
-            REMOVE_RANDOM_SEED=1
-            ;;
-        --remove-machine-id) REMOVE_MACHINE_ID=1 ;;
-        --remove-cloud-init-state) REMOVE_CLOUD_INIT_STATE=1 ;;
-        --remove-cloud-init-generated-configs)
+        --machine-id) REMOVE_MACHINE_ID=1 ;;
+        --cloud-state) REMOVE_CLOUD_INIT_STATE=1 ;;
+        --cloud-configs)
             REMOVE_CLOUD_INIT_STATE=1
             REMOVE_CLOUD_INIT_GENERATED_CONFIGS=1
             ;;
-        --remove-network-leases) REMOVE_NETWORK_LEASES=1 ;;
-        --remove-random-seed) REMOVE_RANDOM_SEED=1 ;;
-        --remove-ssh-host-keys) REMOVE_SSH_HOST_KEYS=1 ;;
-        --remove-known-hosts) REMOVE_KNOWN_HOSTS=1 ;;
-        --zero-free-space) ZERO_FREE_SPACE=1 ;;
+        --leases) REMOVE_NETWORK_LEASES=1 ;;
+        --random-seed) REMOVE_RANDOM_SEED=1 ;;
+        --host-keys) REMOVE_SSH_HOST_KEYS=1 ;;
+        --known-hosts) REMOVE_KNOWN_HOSTS=1 ;;
+        --zero-free) ZERO_FREE_SPACE=1 ;;
         --wipe-swap) WIPE_SWAP=1 ;;
-        --extra-paths)
-            [ "$#" -ge 2 ] || die "--extra-paths requires a file"
+        --paths)
+            [ "$#" -ge 2 ] || die "--paths requires a file"
             shift
             EXTRA_PATH_FILE=$1
             ;;
-        --extra-services)
-            [ "$#" -ge 2 ] || die "--extra-services requires a file"
+        --services)
+            [ "$#" -ge 2 ] || die "--services requires a file"
             shift
             EXTRA_SERVICE_FILE=$1
             ;;
@@ -358,7 +376,8 @@ while [ "$#" -gt 0 ]; do
             shift
             SOURCE_SCRIPT_PATH=$1
             ;;
-        -h|--help) usage; exit 0 ;;
+        --help) usage; exit 0 ;;
+        --version) print_version; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
     shift
@@ -529,7 +548,7 @@ validate_extra_lists() {
             case $unit in *[!A-Za-z0-9_.@:-]*) die "invalid unit name: $unit" ;; esac
             case $unit in
                 *.service|*.socket|*.timer|*.path|*.target) ;;
-                *) die "unsupported unit type in --extra-services: $unit" ;;
+                *) die "unsupported unit type in --services: $unit" ;;
             esac
         done < "$EXTRA_SERVICE_FILE"
     fi
@@ -838,7 +857,7 @@ $plan_key
                         "$DISCOVERED_SERVICE_UNIT" "$plan_pid" "$plan_comm" "$plan_target"
                     PLAN_BLOCKED=1
                 else
-                    printf '  AUTO-STOP-PRESERVE unit=%s pid=%s process=%s target=%s (add to --extra-paths to clean)\n' \
+                    printf '  AUTO-STOP-PRESERVE unit=%s pid=%s process=%s target=%s (add to --paths to clean)\n' \
                         "$DISCOVERED_SERVICE_UNIT" "$plan_pid" "$plan_comm" "$plan_target"
                 fi
             else
@@ -852,7 +871,7 @@ $plan_key
                             "$DISCOVERED_USER_SERVICE_UNIT" "$plan_pid" "$plan_comm" "$plan_target"
                     fi
                 else
-                    printf '  BLOCKED pid=%s process=%s target=%s (no systemd system-service mapping; add --extra-services or stop it first)\n' \
+                    printf '  BLOCKED pid=%s process=%s target=%s (no systemd system-service mapping; add --services or stop it first)\n' \
                         "$plan_pid" "$plan_comm" "$plan_target"
                     PLAN_BLOCKED=1
                 fi
@@ -863,7 +882,7 @@ $plan_key
     printf '%s\n' \
         '  Every safely mapped system service affecting cleanup is stopped.' \
         '  User services require a final power action or must not hold cleanup-related files.' \
-        '  Nonstandard application logs remain untouched unless selected by --extra-paths.'
+        '  Nonstandard application logs remain untouched unless selected by --paths.'
 }
 
 print_cloud_init_generated_config_preview() {
@@ -904,7 +923,8 @@ print_plan() {
     ROOT_DEVICE=$(findmnt -n -o SOURCE / 2>/dev/null || printf unknown)
     HOST_NAME=$(hostname 2>/dev/null || printf unknown)
     printf '%s\n' \
-        'CXT-SystemPrep dry-run plan (no changes made)' \
+        "$PROGRAM_NAME $PROGRAM_VERSION dry-run plan (no changes made)" \
+        "  build date: $PROGRAM_BUILD_DATE" \
         "  host: $HOST_NAME" \
         "  root filesystem: $ROOT_DEVICE" \
         "  running script: $SCRIPT_PATH" \
@@ -937,6 +957,9 @@ print_plan() {
         '  transient service + login termination: enabled for every real execution' \
         '  systemd --collect + automatic script deletion: enabled for every real execution' \
         "  advisory final verification: $(print_boolean "$VERIFY")"
+    if [ -n "$PROGRAM_BUILD_COMMIT" ]; then
+        printf '  build commit: %s\n' "$PROGRAM_BUILD_COMMIT"
+    fi
     if [ "$VERIFY" -eq 1 ]; then
         printf '  verification log: %s\n' "$VERIFY_LOG"
     fi
@@ -1078,8 +1101,12 @@ print_plan() {
 validate_extra_lists
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    print_plan || exit 2
-    exit 0
+    if print_plan; then
+        log "dry-run completed successfully; exit=0"
+        exit 0
+    fi
+    warn "dry-run blocked; exit=2"
+    exit 2
 fi
 
 [ "$(id -u)" -eq 0 ] || die "run this script as root"
@@ -1096,27 +1123,27 @@ if have auditctl; then
 fi
 if [ "$REMOVE_CLOUD_INIT_GENERATED_CONFIGS" -eq 1 ]; then
     [ "$ACTION" != none ] ||
-        die "--remove-cloud-init-generated-configs requires --poweroff or --reboot"
-    have cloud-init || die "--remove-cloud-init-generated-configs requires cloud-init"
+        die "--cloud-configs requires --poweroff or --reboot"
+    have cloud-init || die "--cloud-configs requires cloud-init"
     cloud-init clean --help 2>&1 | grep -q -- '--configs' ||
         die "installed cloud-init does not support clean --configs"
     warn "HIGH RISK: cloud-init generated network, SSH, datasource, and fstab configuration will be removed"
 fi
 if [ "$REMOVE_MACHINE_ID" -eq 1 ]; then
     [ "$ACTION" != none ] ||
-        die "--remove-machine-id requires --poweroff or --reboot"
+        die "--machine-id requires --poweroff or --reboot"
 fi
 if [ "$REMOVE_NETWORK_LEASES" -eq 1 ]; then
     [ "$ACTION" != none ] ||
-        die "--remove-network-leases requires --poweroff or --reboot"
+        die "--leases requires --poweroff or --reboot"
 fi
 if [ "$REMOVE_RANDOM_SEED" -eq 1 ]; then
     [ "$ACTION" != none ] ||
-        die "--remove-random-seed requires --poweroff or --reboot"
+        die "--random-seed requires --poweroff or --reboot"
 fi
 if [ "$REMOVE_SSH_HOST_KEYS" -eq 1 ]; then
     [ "$ACTION" != none ] ||
-        die "--remove-ssh-host-keys requires --poweroff or --reboot to avoid remote lockout"
+        die "--host-keys requires --poweroff or --reboot to avoid remote lockout"
     detect_ssh_host_certificate_risk &&
         die "refusing to remove SSH host keys while host certificates are configured: $SSH_HOST_CERT_RISK"
     detect_ssh_host_key_regeneration ||
@@ -1151,10 +1178,11 @@ if [ "$WIPE_SWAP" -eq 1 ]; then
     have blockdev || die "--wipe-swap requires blockdev to zero block swap exactly"
 fi
 if [ "$ZERO_FREE_SPACE" -eq 1 ]; then
-    have findmnt || die "--zero-free-space requires findmnt"
+    have findmnt || die "--zero-free requires findmnt"
 fi
 ROOT_DEVICE=$(findmnt -n -o SOURCE / 2>/dev/null || printf unknown)
 HOST_NAME=$(hostname 2>/dev/null || printf unknown)
+log "version: $(version_summary)"
 log "target host: $HOST_NAME; root filesystem: $ROOT_DEVICE; final action: $ACTION"
 warn "this permanently removes audit records, logs, command histories, crash data, and transient state"
 
@@ -1242,18 +1270,18 @@ stage_and_dispatch() {
         poweroff) set -- "$@" --poweroff ;;
         reboot) set -- "$@" --reboot ;;
     esac
-    [ "$REMOVE_MACHINE_ID" -eq 0 ] || set -- "$@" --remove-machine-id
-    [ "$REMOVE_CLOUD_INIT_STATE" -eq 0 ] || set -- "$@" --remove-cloud-init-state
-    [ "$REMOVE_CLOUD_INIT_GENERATED_CONFIGS" -eq 0 ] || set -- "$@" --remove-cloud-init-generated-configs
-    [ "$REMOVE_NETWORK_LEASES" -eq 0 ] || set -- "$@" --remove-network-leases
-    [ "$REMOVE_RANDOM_SEED" -eq 0 ] || set -- "$@" --remove-random-seed
-    [ "$REMOVE_SSH_HOST_KEYS" -eq 0 ] || set -- "$@" --remove-ssh-host-keys
-    [ "$REMOVE_KNOWN_HOSTS" -eq 0 ] || set -- "$@" --remove-known-hosts
-    [ "$ZERO_FREE_SPACE" -eq 0 ] || set -- "$@" --zero-free-space
+    [ "$REMOVE_MACHINE_ID" -eq 0 ] || set -- "$@" --machine-id
+    [ "$REMOVE_CLOUD_INIT_STATE" -eq 0 ] || set -- "$@" --cloud-state
+    [ "$REMOVE_CLOUD_INIT_GENERATED_CONFIGS" -eq 0 ] || set -- "$@" --cloud-configs
+    [ "$REMOVE_NETWORK_LEASES" -eq 0 ] || set -- "$@" --leases
+    [ "$REMOVE_RANDOM_SEED" -eq 0 ] || set -- "$@" --random-seed
+    [ "$REMOVE_SSH_HOST_KEYS" -eq 0 ] || set -- "$@" --host-keys
+    [ "$REMOVE_KNOWN_HOSTS" -eq 0 ] || set -- "$@" --known-hosts
+    [ "$ZERO_FREE_SPACE" -eq 0 ] || set -- "$@" --zero-free
     [ "$WIPE_SWAP" -eq 0 ] || set -- "$@" --wipe-swap
     [ "$VERIFY" -eq 0 ] || set -- "$@" --verify
-    [ -z "$staged_path_file" ] || set -- "$@" --extra-paths "$staged_path_file"
-    [ -z "$staged_service_file" ] || set -- "$@" --extra-services "$staged_service_file"
+    [ -z "$staged_path_file" ] || set -- "$@" --paths "$staged_path_file"
+    [ -z "$staged_service_file" ] || set -- "$@" --services "$staged_service_file"
     if "$@"; then
         log "dispatched transient service: $transient_unit.service"
         log "private runtime directory: $runtime_dir"
@@ -1585,11 +1613,11 @@ stop_unit_with_activators() {
 stop_configured_unit() {
     configured_unit=$1
     protected_cleanup_unit "$configured_unit" &&
-        die "refusing to stop protected runtime unit from --extra-services: $configured_unit"
+        die "refusing to stop protected runtime unit from --services: $configured_unit"
     case $configured_unit in
         *.service) stop_unit_with_activators "$configured_unit" explicit ;;
         *.socket|*.timer|*.path) stop_required_unit "$configured_unit" ;;
-        *) die "unsupported unit type in --extra-services: $configured_unit" ;;
+        *) die "unsupported unit type in --services: $configured_unit" ;;
     esac
 }
 
@@ -1693,7 +1721,7 @@ find_open_log_writer() {
 
 # Automatically quiesce every mapped service that writes a selected cleanup
 # target or other log-like file. Nonstandard application logs are only removed
-# when --extra-paths selects them, but their writers are still stopped.
+# when --paths selects them, but their writers are still stopped.
 AUTO_STOP_COUNT=0
 auto_stop_open_log_writers() {
     while find_open_log_writer; do

@@ -6,13 +6,19 @@
 
 It removes disposable logs, histories, caches, package-manager history, container text logs, and transient state. Clone-specific identity operations are explicit and never selected by the default profile.
 
+Current tool version: **1.1.0**, built on **2026-08-10**. This tool keeps its
+own version record and does not require a repository-level Git tag or release.
+
 > **Warning**
 >
 > This tool is destructive. Use it only on a source system that is deliberately being sealed for cloning. It is not a forensic sanitization utility and cannot erase data already sent to remote logging, monitoring, backups, snapshots, or lower storage layers.
 
-## Download and run
+## Download the latest version
 
 Run the following as `root`. The recommended location is `/run`: it is normally a volatile runtime filesystem and the script will remove its uploaded source copy after successful service dispatch.
+
+The repository's current `master` copy is the recommended download source so
+users receive the latest maintained tool version:
 
 ```sh
 curl -fL --proto '=https' --tlsv1.2 \
@@ -20,8 +26,14 @@ curl -fL --proto '=https' --tlsv1.2 \
   -o /run/CXT-SystemPrep.sh
 
 chmod 700 /run/CXT-SystemPrep.sh
+/bin/sh /run/CXT-SystemPrep.sh --version
+sha256sum /run/CXT-SystemPrep.sh
 /bin/sh /run/CXT-SystemPrep.sh --help
 ```
+
+Record the displayed version and SHA-256 value with the image-build notes. Since
+`master` is intentionally updated in place, an older checksum must never be used
+to validate a newly downloaded copy.
 
 If `curl` is unavailable:
 
@@ -31,12 +43,20 @@ wget -O /run/CXT-SystemPrep.sh \
 chmod 700 /run/CXT-SystemPrep.sh
 ```
 
-For repeatable production use, download from an immutable Git tag or commit URL rather than a moving branch reference. Before execution, inspect the file and record its checksum:
+### Optional reproducible snapshot
+
+The tool does not require its own Git tag. When a specific audited build must be
+reproduced exactly, replace `<COMMIT_SHA>` with the repository commit recorded
+for that build:
 
 ```sh
-sha256sum /run/CXT-SystemPrep.sh
-/bin/sh /run/CXT-SystemPrep.sh --profile seal --poweroff --dry-run
+curl -fL --proto '=https' --tlsv1.2 \
+  'https://raw.githubusercontent.com/MeowLove/Network-Reinstall-System-Modify/<COMMIT_SHA>/Tools/CXT-SystemPrep/CXT-SystemPrep.sh' \
+  -o /run/CXT-SystemPrep.sh
 ```
+
+This commit-pinned form is an audit and rollback aid, not the default update
+channel. Normal users should use `master` to receive the newest maintained file.
 
 ## Recommended invocation
 
@@ -59,6 +79,15 @@ The `exec` is intentional: the interactive shell is replaced by the script launc
 ```sh
 /bin/sh /run/CXT-SystemPrep.sh --profile seal --poweroff --dry-run
 ```
+
+A successful preview ends with:
+
+```text
+[CXT-SystemPrep] dry-run completed successfully; exit=0
+```
+
+A blocked preview prints an explanatory `BLOCKED` item and ends with exit code
+`2`.
 
 ## Profiles
 
@@ -92,26 +121,26 @@ exec /bin/sh /run/CXT-SystemPrep.sh --profile privacy --reboot --yes
 | `--profile test\|seal\|privacy` | Select a preset scope |
 | `--poweroff` | Clean, sync, and power off |
 | `--reboot` | Clean, sync, and reboot |
-| `--remove-machine-identity` | Enable machine-id, cloud-init state, network lease, and random-seed cleanup |
-| `--remove-machine-id` | Mark `/etc/machine-id` as uninitialized and remove the legacy D-Bus copy; requires a final power action |
-| `--remove-cloud-init-state` | Remove cloud-init instance cache, logs, runtime state, and seed data |
-| `--remove-cloud-init-generated-configs` | **High risk:** also run `cloud-init clean --configs all`; implies cloud-init state cleanup and requires `--poweroff` or `--reboot` |
-| `--remove-network-leases` | Remove saved DHCP and NetworkManager lease files; requires a final power action |
-| `--remove-random-seed` | Remove systemd's saved random seed; requires a final power action |
-| `--remove-ssh-host-keys` | Remove SSH server host keys after a boot-time regeneration precheck; requires a final power action |
-| `--remove-known-hosts` | Remove user and system-wide SSH client `known_hosts` files |
-| `--zero-free-space` | Zero free space on writable ext2/3/4 and XFS filesystems; slow, but improves raw-image compression |
+| `--machine-id` | Mark `/etc/machine-id` as uninitialized and remove the legacy D-Bus copy; requires a final power action |
+| `--cloud-state` | Remove cloud-init instance cache, logs, runtime state, and seed data |
+| `--cloud-configs` | **High risk:** also run `cloud-init clean --configs all`; implies cloud-state cleanup and requires `--poweroff` or `--reboot` |
+| `--leases` | Remove saved DHCP and NetworkManager lease files; requires a final power action |
+| `--random-seed` | Remove systemd's saved random seed; requires a final power action |
+| `--host-keys` | Remove SSH server host keys after a boot-time regeneration precheck; requires a final power action |
+| `--known-hosts` | Remove user and system-wide SSH client `known_hosts` files |
+| `--zero-free` | Zero free space on writable ext2/3/4 and XFS filesystems; slow, but improves raw-image compression |
 | `--wipe-swap` | Zero active disk swap and recreate its metadata; slow and requires adequate RAM |
-| `--extra-paths FILE` | Read dedicated, disposable application log/cache paths from a file |
-| `--extra-services FILE` | Stop explicitly listed system-manager units during cleanup; useful for activators or services that need an explicit pause |
+| `--paths FILE` | Read dedicated, disposable application log/cache paths from a file |
+| `--services FILE` | Stop explicitly listed system-manager units during cleanup; useful for activators or services that need an explicit pause |
 | `--dry-run` | Print the plan without changing the system |
 | `--verify` | Write an advisory verification report to `cxt-systemprep.log` in the private runtime directory |
 | `--yes` | Skip the typed confirmation |
+| `--help` | Show help |
+| `--version` | Show the version, build date, and optional commit supplied by release packaging or the build environment |
 
-`--terminate-sessions`, `--self-delete`, `--audit-open-log-writers`, and
-`--ignore-unknown-log-writers` are deliberately absent. Session termination,
-source/runtime collection, and log-writer auditing are automatic. An unmapped or
-protected writer is a hard safety failure; it cannot be ignored.
+Version 1.1.0 intentionally removes the v1.0.x compatibility names and short
+aliases. Profiles remain the recommended interface; the shorter switches above
+are for custom scopes.
 
 ## Automatic transient-service behavior
 
@@ -154,7 +183,7 @@ boot.
 
 Only the file contents selected by the cleanup scope are removed. A custom
 application log outside the standard system locations is stopped automatically
-but preserved unless it is listed in `--extra-paths`. For example, PicoClaw's
+but preserved unless it is listed in `--paths`. For example, PicoClaw's
 `/home/picoclaw/.picoclaw/logs` is preserved by default; add that directory to an
 extra-path file when it should be emptied. Nginx logs under `/var/log/nginx` are
 part of the standard `/var/log/**` tree and are cleaned automatically.
@@ -179,7 +208,7 @@ Dry-run discovery labels:
 | `BUILT-IN-STOP` | A built-in platform service will be stopped and its selected data cleaned |
 | `AUTO-STOP` | An unlisted service was discovered automatically and its selected data will be cleaned |
 | `AUTO-STOP-PRESERVE` | The service will be stopped, but its nonstandard application log is outside the cleanup scope |
-| `EXTRA-STOP` | The service was also present in `--extra-services` |
+| `EXTRA-STOP` | The service was also present in `--services` |
 | `USER-STOP` | A systemd user service writes selected data and its user resources will terminate before reboot or poweroff |
 | `USER-STOP-PRESERVE` | A user service will terminate before the final power action, but its nonstandard application log is preserved |
 | `BLOCKED` | The writer cannot be stopped safely; a real run will abort |
@@ -197,34 +226,34 @@ Fail2ban/CrowdSec databases, container data, package databases, security rules,
 and application databases are not general cleanup targets. In particular, the
 Fail2ban ban database is retained because it is operational state rather than a
 log. Extra business logs or caches must be explicitly supplied through
-`--extra-paths` after reviewing the safety restrictions.
+`--paths` after reviewing the safety restrictions.
 
 ## Cloud-init behavior
 
-`--remove-cloud-init-state` clears cloud-init instance state, logs, runtime state, and seed data, while intentionally retaining cloud-init-generated system configuration.
+`--cloud-state` clears cloud-init instance state, logs, runtime state, and seed data, while intentionally retaining cloud-init-generated system configuration.
 
-`--remove-cloud-init-generated-configs` is a separate high-risk option. It requests `cloud-init clean --configs all`, which may remove generated network configuration, SSH daemon fragments, datasource-specific files, and cloud-init-managed `/etc/fstab` entries. Use it only when the next boot is guaranteed to receive compatible cloud-init data and can regenerate the configuration.
+`--cloud-configs` is a separate high-risk option. It requests `cloud-init clean --configs all`, which may remove generated network configuration, SSH daemon fragments, datasource-specific files, and cloud-init-managed `/etc/fstab` entries. Use it only when the next boot is guaranteed to receive compatible cloud-init data and can regenerate the configuration.
 
 Use dry-run before enabling this option:
 
 ```sh
 /bin/sh /run/CXT-SystemPrep.sh \
   --profile seal \
-  --remove-cloud-init-generated-configs \
+  --cloud-configs \
   --poweroff \
   --dry-run
 ```
 
 ## Extra list files
 
-`--extra-paths FILE` accepts one absolute path per line. Blank lines and `#`
+`--paths FILE` accepts one absolute path per line. Blank lines and `#`
 comments are ignored. A listed directory is emptied but preserved. The script
 rejects symlinks, broad system roots, protected configuration/state trees, mount
 roots, database roots, and suspicious paths outside dedicated
 log/cache/history/trace/audit/tmp locations. This is the normal mechanism for
 cleaning application-owned paths such as `/home/picoclaw/.picoclaw/logs`.
 
-`--extra-services FILE` accepts one system-manager `.service`, `.socket`,
+`--services FILE` accepts one system-manager `.service`, `.socket`,
 `.timer`, or `.path` unit per line. Arbitrary `.target` units, critical runtime
 dependencies, systemd user-manager units, and missing or unloaded units are
 rejected before staging. Listed units are stopped and runtime-masked during
@@ -242,7 +271,7 @@ Example for PicoClaw:
 ```sh
 printf '%s\n' /home/picoclaw/.picoclaw/logs > /run/cxt-extra-paths.list
 exec /bin/sh /run/CXT-SystemPrep.sh \
-  --profile test --extra-paths /run/cxt-extra-paths.list --yes
+  --profile test --paths /run/cxt-extra-paths.list --yes
 ```
 
 ## Platform requirements and limits
